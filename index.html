@@ -4,75 +4,8 @@
   <meta charset="utf-8">
   <title>Corporate Catharsis - Office Rage Room</title>
   
-  <!-- 1. Load A-Frame FIRST -->
-  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
-
-  <!-- 2. ROBUST THREE.JS COMPATIBILITY SHIM -->
-  <script>
-    (function fixThreeCompatibility() {
-      if (typeof THREE === 'undefined') return;
-      
-      // Fix for 'THREE.Geometry is not a constructor'
-      if (typeof THREE.Geometry === 'undefined') {
-        THREE.Geometry = function () {
-          return new THREE.BufferGeometry();
-        };
-      }
-
-      // FIX FOR 'combined.applyMatrix is not a function'
-      if (THREE.BufferGeometry && !THREE.BufferGeometry.prototype.applyMatrix) {
-        THREE.BufferGeometry.prototype.applyMatrix = function (matrix) {
-          return this.applyMatrix4(matrix);
-        };
-      }
-
-      // Fix for 'tmp.fromBufferGeometry is not a function'
-      if (THREE.BufferGeometry && !THREE.BufferGeometry.prototype.fromBufferGeometry) {
-        THREE.BufferGeometry.prototype.fromBufferGeometry = function (geometry) {
-          this.copy(geometry);
-          return this;
-        };
-      }
-
-      // Fix for 'combined.merge is not a function'
-      if (THREE.BufferGeometry && !THREE.BufferGeometry.prototype.merge) {
-        THREE.BufferGeometry.prototype.merge = function (geometry, matrix) {
-          if (matrix) {
-            geometry = geometry.clone();
-            geometry.applyMatrix4(matrix);
-          }
-          this.copy(geometry);
-          return this;
-        };
-      }
-
-      const geometries = ['Plane', 'Box', 'Sphere', 'Cylinder', 'Ring', 'Cone', 'Torus', 'TorusKnot', 'Tetrahedron'];
-      geometries.forEach(geo => {
-        if (THREE[geo + 'Geometry'] && !THREE[geo + 'BufferGeometry']) {
-          THREE[geo + 'BufferGeometry'] = THREE[geo + 'Geometry'];
-        }
-      });
-
-      if (THREE.BufferAttribute && !THREE.BufferAttribute.prototype.setDynamic) {
-        THREE.BufferAttribute.prototype.setDynamic = function (isDynamic) {
-          this.setUsage(isDynamic ? THREE.DynamicDrawUsage : THREE.StaticDrawUsage);
-          return this;
-        };
-      }
-      
-      if (THREE.BufferGeometry && !THREE.BufferGeometry.prototype.addAttribute) {
-        THREE.BufferGeometry.prototype.addAttribute = function (name, attribute) {
-          return this.setAttribute(name, attribute);
-        };
-      }
-    })();
-  </script>
-
-  <!-- 3. Plugins -->
-  <script src="https://unpkg.com/aframe-physics-system@4.0.1/dist/aframe-physics-system.min.js"></script>
-  <script src="https://unpkg.com/aframe-teleport-controls@0.3.1/dist/aframe-teleport-controls.min.js"></script>
-  <script src="https://unpkg.com/super-hands@3.0.4/dist/super-hands.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/gh/c-frame/aframe-physics-extras@v0.1.0/dist/aframe-physics-extras.min.js"></script>
+  <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/c-frame/aframe-physics-system@v4.2.2/dist/aframe-physics-system.min.js"></script>
 
   <style>
     #overlay {
@@ -106,29 +39,173 @@
   <script>
     let gameStarted = false;
 
-    AFRAME.registerComponent('clock-logic', {
-      init: function () {
-        this.hourHand = this.el.querySelector('.hour-hand');
-        this.minHand = this.el.querySelector('.min-hand');
-      },
-      tick: function () {
-        const now = new Date();
-        const h = now.getHours() % 12, m = now.getMinutes(), s = now.getSeconds();
-        this.hourHand.setAttribute('rotation', `0 0 ${-(h * 30 + m * 0.5)}`);
-        this.minHand.setAttribute('rotation', `0 0 ${-(m * 6 + s * 0.1)}`);
-      }
+    // --- MODULE 1: HAND INTERACTIONS (Integrated from template) ---
+    AFRAME.registerComponent('hand-interactions', {
+        init: function () {
+            this.grabbedEl = null;
+            this.hoverEl = null;
+            this.isFist = false;
+            this.positions = [];
+            this.velocity = new THREE.Vector3();
+            this.handPos = new THREE.Vector3();
+            this.worldPos = new THREE.Vector3();
+
+            this.onPinchStart = this.onPinchStart.bind(this);
+            this.onPinchEnd = this.onPinchEnd.bind(this);
+            this.el.addEventListener('pinchstarted', this.onPinchStart);
+            this.el.addEventListener('pinchended', this.onPinchEnd);
+        },
+
+        onPinchStart: function () {
+            if (this.hoverEl && !this.grabbedEl) {
+                this.grabbedEl = this.hoverEl;
+                this.grabbedEl.setAttribute('dynamic-body', 'type: kinematic');
+                if (this.grabbedEl.dataset.originalColor) {
+                    this.grabbedEl.setAttribute('color', this.grabbedEl.dataset.originalColor);
+                }
+            }
+        },
+
+        onPinchEnd: function () {
+            if (this.grabbedEl) {
+                this.grabbedEl.setAttribute('dynamic-body', 'type: dynamic');
+                const body = this.grabbedEl.components['dynamic-body']?.body;
+                if (body) {
+                    body.velocity.set(this.velocity.x * 2.5, this.velocity.y * 2.5, this.velocity.z * 2.5);
+                }
+                this.grabbedEl = null;
+            }
+        },
+
+        tick: function (time, timeDelta) {
+            this.el.object3D.getWorldPosition(this.handPos);
+
+            if (timeDelta > 0) {
+                this.positions.push({ pos: this.handPos.clone(), time: time });
+                if (this.positions.length > 5) this.positions.shift();
+                if (this.positions.length > 1) {
+                    const oldest = this.positions[0];
+                    const latest = this.positions[this.positions.length - 1];
+                    const dt = (latest.time - oldest.time) / 1000;
+                    if (dt > 0) this.velocity.subVectors(latest.pos, oldest.pos).multiplyScalar(1 / dt);
+                }
+            }
+
+            const mesh = this.el.getObject3D('mesh');
+            if (mesh && mesh.skeleton) {
+                const wrist = new THREE.Vector3().setFromMatrixPosition(mesh.skeleton.bones[0].matrixWorld);
+                let maxDist = 0;
+                for(let i = 1; i < mesh.skeleton.bones.length; i++) {
+                    const bone = new THREE.Vector3().setFromMatrixPosition(mesh.skeleton.bones[i].matrixWorld);
+                    maxDist = Math.max(maxDist, wrist.distanceTo(bone));
+                }
+                this.isFist = (maxDist > 0 && maxDist < 0.085);
+            }
+
+            if (this.grabbedEl) {
+                const offset = new THREE.Vector3(0, -0.05, -0.05).applyQuaternion(this.el.object3D.quaternion);
+                const targetPos = this.handPos.clone().add(offset);
+                this.grabbedEl.object3D.position.copy(targetPos);
+                this.grabbedEl.object3D.quaternion.copy(this.el.object3D.quaternion);
+                const body = this.grabbedEl.components['dynamic-body']?.body;
+                if (body) {
+                    body.position.copy(targetPos);
+                    body.quaternion.copy(this.el.object3D.quaternion);
+                }
+                return;
+            }
+
+            let closest = null;
+            let minDist = Infinity;
+            document.querySelectorAll('.grabbable').forEach(el => {
+                el.object3D.getWorldPosition(this.worldPos);
+                const d = this.handPos.distanceTo(this.worldPos);
+                if (d < 0.2 && d < minDist) { closest = el; minDist = d; }
+            });
+
+            if (this.hoverEl && this.hoverEl !== closest) {
+                this.hoverEl.setAttribute('color', this.hoverEl.dataset.originalColor);
+                this.hoverEl = null;
+            }
+            if (closest && !this.hoverEl) {
+                this.hoverEl = closest;
+                if (!this.hoverEl.dataset.originalColor) this.hoverEl.dataset.originalColor = this.hoverEl.getAttribute('color');
+                this.hoverEl.setAttribute('color', '#aaffaa');
+            }
+
+            if (this.isFist) {
+                document.querySelectorAll('.breakable, .grabbable').forEach(el => {
+                    el.object3D.getWorldPosition(this.worldPos);
+                    if (this.handPos.distanceTo(this.worldPos) < 0.15) {
+                        this.el.emit('hit', {target: el});
+                    }
+                });
+            }
+        }
     });
 
+    // --- MODULE 2: LOCOMOTION ---
+    AFRAME.registerComponent('smooth-locomotion', {
+        schema: {
+            speed: {type: 'number', default: 2.0},
+            turnAngle: {type: 'number', default: 45}
+        },
+        init: function () {
+            this.moveData = {x: 0, y: 0};
+            this.canSnap = true;
+            this.el.addEventListener('thumbstickmoved', (evt) => {
+                this.moveData = evt.detail;
+            });
+        },
+        tick: function (time, timeDelta) {
+            if (!timeDelta) return;
+            const rig = document.getElementById('rig');
+            const cam = document.querySelector('a-camera');
+            const handType = this.el.getAttribute('hand-tracking-controls').hand;
+            
+            if (handType === 'left') {
+                if (Math.abs(this.moveData.x) > 0.1 || Math.abs(this.moveData.y) > 0.1) {
+                    const direction = new THREE.Vector3(this.moveData.x, 0, this.moveData.y);
+                    const rotation = cam.object3D.quaternion;
+                    direction.applyQuaternion(rotation);
+                    direction.y = 0;
+                    direction.normalize();
+                    const speed = this.data.speed * (timeDelta / 1000);
+                    rig.object3D.position.addScaledVector(direction, speed);
+                }
+            }
+
+            if (handType === 'right') {
+                if (Math.abs(this.moveData.x) > 0.7) {
+                    if (this.canSnap) {
+                        const angle = this.moveData.x > 0 ? -this.data.turnAngle : this.data.turnAngle;
+                        rig.object3D.rotation.y += THREE.MathUtils.degToRad(angle);
+                        this.canSnap = false;
+                    }
+                } else {
+                    this.canSnap = true;
+                }
+            }
+        }
+    });
+
+    // Smash Logic Extension
     AFRAME.registerComponent('smashable', {
       schema: {
         health: {type: 'number', default: 3},
         smashedColor: {type: 'color', default: '#555'}
       },
       init: function () {
+        // Handle punch hits from template
+        window.addEventListener('hit', (e) => {
+           if (e.detail.target === this.el) this.takeDamage();
+        });
+
+        // Handle collision damage
         this.el.addEventListener('collidestart', (e) => {
           const target = e.detail.targetEl;
-          if (target && target.classList.contains('weapon')) {
-            this.takeDamage();
+          if (target && (target.classList.contains('weapon') || target.classList.contains('grabbable'))) {
+             this.takeDamage();
           }
         });
       },
@@ -142,11 +219,23 @@
         });
         if (this.data.health <= 0) {
           this.el.setAttribute('color', this.data.smashedColor);
-          if (this.el.body && this.el.body.type === CANNON.Body.STATIC) {
-            this.el.setAttribute('static-body', 'enabled: false');
-            this.el.setAttribute('dynamic-body', 'mass: 5');
+          if (this.el.body) {
+            this.el.setAttribute('dynamic-body', 'type: dynamic; mass: 5');
           }
         }
+      }
+    });
+
+    AFRAME.registerComponent('clock-logic', {
+      init: function () {
+        this.hourHand = this.el.querySelector('.hour-hand');
+        this.minHand = this.el.querySelector('.min-hand');
+      },
+      tick: function () {
+        const now = new Date();
+        const h = now.getHours() % 12, m = now.getMinutes(), s = now.getSeconds();
+        this.hourHand.setAttribute('rotation', `0 0 ${-(h * 30 + m * 0.5)}`);
+        this.minHand.setAttribute('rotation', `0 0 ${-(m * 6 + s * 0.1)}`);
       }
     });
 
@@ -192,150 +281,104 @@
 
   <div id="overlay">
     <h1>Corporate Catharsis</h1>
-    <p>The deadline has passed. Pick up the bat or hammer and let out some steam.</p>
+    <p>Deadline Missed. Use your hands to pinch-grab items, throw them, or punch the furniture.</p>
     <button id="start-btn" onclick="startGame()">ENTER OFFICE</button>
   </div>
 
-  <a-scene physics="driver: local; gravity: -9.8; debug: false;">
+  <a-scene physics="gravity: -9.8; debug: false" webxr="optionalFeatures: hand-tracking;">
     
     <a-assets>
-      <!-- Generated SVG Checkerboard Pattern -->
       <img id="checker-tex" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='256' height='256'%3E%3Crect width='128' height='128' fill='%23e0e0e0'/%3E%3Crect x='128' y='128' width='128' height='128' fill='%23e0e0e0'/%3E%3Crect x='128' width='128' height='128' fill='%23333333'/%3E%3Crect y='128' width='128' height='128' fill='%23333333'/%3E%3C/svg%3E" crossorigin="anonymous">
     </a-assets>
 
-    <!-- Camera Rig -->
-    <a-entity id="cameraRig" position="0 0 5">
-      <a-entity id="head" camera position="0 1.6 0" look-controls wasd-controls>
-        <a-cursor fuse="false" raycaster="objects: .weapon" color="red"></a-cursor>
-      </a-entity>
-      
-      <!-- Hand Controllers -->
-      <a-entity id="leftHand" 
-                super-hands="colliderEvent: raycaster-intersection; colliderEventProperty: els; colliderEndEvent: raycaster-intersection-cleared; colliderEndEventProperty: clearedEls"
-                static-body="shape: sphere; sphereRadius: 0.02"
-                physics-collider
-                sphere-collider="objects: .weapon"
-                hand-controls="hand: left"
-                teleport-controls="cameraRig: #cameraRig; teleportOrigin: #head; collisionEntities: .navmesh; button: trigger">
+    <!-- THE RIG: For locomotion -->
+    <a-entity id="rig" position="0 0 5">
+      <a-camera position="0 1.6 0" look-controls wasd-controls>
+        <a-cursor fuse="false" raycaster="objects: .grabbable, .weapon" color="red"></a-cursor>
+      </a-camera>
+
+      <!-- Hand Controllers with integrated interactions -->
+      <a-entity hand-tracking-controls="hand: left" 
+                hand-interactions 
+                smooth-locomotion="speed: 3">
       </a-entity>
 
-      <a-entity id="rightHand" 
-                super-hands="colliderEvent: raycaster-intersection; colliderEventProperty: els; colliderEndEvent: raycaster-intersection-cleared; colliderEndEventProperty: clearedEls"
-                static-body="shape: sphere; sphereRadius: 0.02"
-                physics-collider
-                sphere-collider="objects: .weapon"
-                hand-controls="hand: right"
-                teleport-controls="cameraRig: #cameraRig; teleportOrigin: #head; collisionEntities: .navmesh; button: trigger">
+      <a-entity hand-tracking-controls="hand: right" 
+                hand-interactions 
+                smooth-locomotion>
       </a-entity>
     </a-entity>
 
     <!-- Environment -->
     <a-entity id="room">
-      
-      <!-- Checkered Floor -->
       <a-plane class="navmesh" rotation="-90 0 0" width="12" height="12" 
                material="src: #checker-tex; repeat: 12 12; roughness: 1.0; metalness: 0.0" 
                static-body></a-plane>
       
-      <!-- Walls and Ceiling -->
       <a-box position="0 2 -6" width="12" height="4" depth="0.2" color="#eee" static-body></a-box>
       <a-box position="0 2 6" width="12" height="4" depth="0.2" color="#eee" static-body></a-box>
       <a-box position="-6 2 0" width="0.2" height="4" depth="12" color="#eee" static-body></a-box>
       <a-box position="6 2 0" width="0.2" height="4" depth="12" color="#eee" static-body></a-box>
       <a-box position="0 4 0" width="12" height="0.1" depth="12" color="#fff" static-body></a-box>
-      
-      <!-- Baseboards -->
-      <a-box position="0 0.1 -5.9" width="12" height="0.2" depth="0.05" color="#555"></a-box>
-      <a-box position="0 0.1 5.9" width="12" height="0.2" depth="0.05" color="#555"></a-box>
-      <a-box position="-5.9 0.1 0" width="0.05" height="0.2" depth="12" color="#555"></a-box>
-      <a-box position="5.9 0.1 0" width="0.05" height="0.2" depth="12" color="#555"></a-box>
     </a-entity>
 
-    <!-- Central Workstations -->
+    <!-- Workstations -->
     <a-entity id="work-area">
       <script>
-        const createWorkstation = (x, z) => {
-          const group = document.createElement('a-entity');
-          group.setAttribute('position', `${x} 0 ${z}`);
-          
-          const desk = document.createElement('a-box');
-          desk.setAttribute('position', '0 0.75 0');
-          desk.setAttribute('width', '1.5'); desk.setAttribute('height', '0.05'); desk.setAttribute('depth', '0.8');
-          desk.setAttribute('color', '#d2b48c');
-          desk.setAttribute('static-body', '');
-          desk.setAttribute('smashable', 'health: 5; smashedColor: #8b4513');
-          group.appendChild(desk);
-
-          [-0.4, 0.4].forEach(offset => {
-            const laptop = document.createElement('a-box');
-            laptop.setAttribute('position', `${offset} 0.8 0`);
-            laptop.setAttribute('width', '0.35'); laptop.setAttribute('height', '0.05'); laptop.setAttribute('depth', '0.25');
-            laptop.setAttribute('color', '#2b2b2b');
-            laptop.setAttribute('dynamic-body', 'mass: 0.5');
-            laptop.setAttribute('smashable', 'health: 1; smashedColor: #000');
-            group.appendChild(laptop);
-          });
-
-          const chairGroup = document.createElement('a-entity');
-          chairGroup.setAttribute('position', '0 0 0.7');
-          chairGroup.setAttribute('dynamic-body', 'mass: 2');
-          chairGroup.setAttribute('smashable', 'health: 3');
-          
-          const seat = document.createElement('a-box');
-          seat.setAttribute('position', '0 0.4 0');
-          seat.setAttribute('width', '0.45'); seat.setAttribute('height', '0.08'); seat.setAttribute('depth', '0.45');
-          seat.setAttribute('color', '#1a1a1a');
-          chairGroup.appendChild(seat);
-
-          const back = document.createElement('a-box');
-          back.setAttribute('position', '0 0.7 0.2');
-          back.setAttribute('width', '0.45'); back.setAttribute('height', '0.6'); back.setAttribute('depth', '0.05');
-          back.setAttribute('color', '#1a1a1a');
-          chairGroup.appendChild(back);
-
-          group.appendChild(chairGroup);
-          return group;
-        };
-
         window.addEventListener('DOMContentLoaded', () => {
           const area = document.querySelector('#work-area');
           const positions = [{x: -2, z: -1.5}, {x: 2, z: -1.5}, {x: -2, z: 0.5}, {x: 2, z: 0.5}, {x: -2, z: 2.5}, {x: 2, z: 2.5}];
-          positions.forEach(pos => area.appendChild(createWorkstation(pos.x, pos.z)));
+          
+          positions.forEach(pos => {
+            const group = document.createElement('a-entity');
+            group.setAttribute('position', `${pos.x} 0 ${pos.z}`);
+            
+            const desk = document.createElement('a-box');
+            desk.setAttribute('class', 'breakable grabbable');
+            desk.setAttribute('position', '0 0.75 0');
+            desk.setAttribute('width', '1.5'); desk.setAttribute('height', '0.05'); desk.setAttribute('depth', '0.8');
+            desk.setAttribute('color', '#d2b48c');
+            desk.setAttribute('static-body', '');
+            desk.setAttribute('smashable', 'health: 5; smashedColor: #8b4513');
+            group.appendChild(desk);
+
+            [-0.4, 0.4].forEach(offset => {
+              const laptop = document.createElement('a-box');
+              laptop.setAttribute('class', 'breakable grabbable');
+              laptop.setAttribute('position', `${offset} 0.8 0`);
+              laptop.setAttribute('width', '0.35'); laptop.setAttribute('height', '0.05'); laptop.setAttribute('depth', '0.25');
+              laptop.setAttribute('color', '#2b2b2b');
+              laptop.setAttribute('dynamic-body', 'mass: 0.5');
+              laptop.setAttribute('smashable', 'health: 2; smashedColor: #000');
+              group.appendChild(laptop);
+            });
+
+            area.appendChild(group);
+          });
         });
       </script>
     </a-entity>
 
     <!-- Boss -->
-    <a-entity id="boss" position="0 0 -4" boss-behavior dynamic-body="mass: 80" smashable="health: 10; smashedColor: #ff0000">
+    <a-entity id="boss" class="breakable" position="0 0 -4" boss-behavior dynamic-body="mass: 80" smashable="health: 12; smashedColor: #ff0000">
       <a-box position="0 1 0" width="0.5" height="0.8" depth="0.3" color="#00008B"></a-box>
       <a-box position="0 1.6 0" width="0.3" height="0.3" depth="0.3" color="#ffe0bd"></a-box>
-      <a-box position="0 1.45 0.16" width="0.05" height="0.2" depth="0.02" color="#ff0000"></a-box>
       <a-cylinder position="-0.15 0.4 0" radius="0.08" height="0.8" color="#000"></a-cylinder>
       <a-cylinder position="0.15 0.4 0" radius="0.08" height="0.8" color="#000"></a-cylinder>
     </a-entity>
 
-    <!-- Weapons -->
-    <a-entity id="bat" class="weapon" position="5.5 0.5 -2" 
-              grabbable stretchable draggable 
-              dynamic-body="mass: 2" 
-              collision-filter="group: hands; collidesWith: default, hands">
+    <!-- Weapons (Grabbable) -->
+    <a-entity id="bat" class="weapon grabbable" position="5.5 0.5 -2" 
+              dynamic-body="mass: 2">
       <a-cylinder radius="0.03" height="0.8" color="#8B4513" rotation="0 0 10"></a-cylinder>
     </a-entity>
 
-    <a-entity id="hammer" class="weapon" position="5.3 0.2 -2.5" 
-              grabbable stretchable draggable 
-              dynamic-body="mass: 4" 
-              collision-filter="group: hands; collidesWith: default, hands">
+    <a-entity id="hammer" class="weapon grabbable" position="5.3 0.2 -2.5" 
+              dynamic-body="mass: 4">
       <a-entity rotation="90 0 0">
         <a-cylinder radius="0.02" height="0.4" color="#444"></a-cylinder>
         <a-box position="0 0.2 0" width="0.15" height="0.1" depth="0.1" color="#222"></a-box>
       </a-entity>
-    </a-entity>
-
-    <!-- Water Cooler -->
-    <a-entity position="-5 0 -5" smashable="health: 4">
-      <a-box position="0 0.5 0" width="0.8" height="1" depth="0.8" color="#ccc" static-body></a-box>
-      <a-box position="0 1.05 0" width="0.7" height="0.2" depth="0.7" color="#ddd"></a-box>
     </a-entity>
 
     <!-- Clock -->
