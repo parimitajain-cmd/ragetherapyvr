@@ -50,7 +50,7 @@
   <script>
     let gameStarted = false;
 
-    // --- MODULE 1: HAND INTERACTIONS (Pinch to Grab & Punch to Break) ---
+    // --- MODULE 1: HAND INTERACTIONS ---
     AFRAME.registerComponent('hand-interactions', {
         init: function () {
             this.grabbedEl = null;
@@ -91,7 +91,6 @@
         tick: function (time, timeDelta) {
             this.el.object3D.getWorldPosition(this.handPos);
 
-            // Velocity tracking for throwing
             if (timeDelta > 0) {
                 this.positions.push({ pos: this.handPos.clone(), time: time });
                 if (this.positions.length > 5) this.positions.shift();
@@ -103,7 +102,6 @@
                 }
             }
 
-            // Fist Detection for Punching
             const mesh = this.el.getObject3D('mesh');
             if (mesh && mesh.skeleton) {
                 const wrist = new THREE.Vector3().setFromMatrixPosition(mesh.skeleton.bones[0].matrixWorld);
@@ -115,7 +113,6 @@
                 this.isFist = (maxDist > 0 && maxDist < 0.085);
             }
 
-            // Hold Object
             if (this.grabbedEl) {
                 const offset = new THREE.Vector3(0, -0.05, -0.05).applyQuaternion(this.el.object3D.quaternion);
                 const targetPos = this.handPos.clone().add(offset);
@@ -129,7 +126,6 @@
                 return;
             }
 
-            // Hover Logic
             let closest = null;
             let minDist = Infinity;
             document.querySelectorAll('.grabbable').forEach(el => {
@@ -145,10 +141,9 @@
             if (closest && !this.hoverEl) {
                 this.hoverEl = closest;
                 if (!this.hoverEl.dataset.originalColor) this.hoverEl.dataset.originalColor = this.hoverEl.getAttribute('color');
-                this.hoverEl.setAttribute('color', '#aaffaa'); // Highlight green
+                this.hoverEl.setAttribute('color', '#aaffaa'); 
             }
 
-            // Punch Logic
             if (this.isFist) {
                 document.querySelectorAll('.breakable, .grabbable').forEach(el => {
                     el.object3D.getWorldPosition(this.worldPos);
@@ -161,7 +156,6 @@
     });
 
     // --- MODULE 2: HAND-EXTENSION LOCOMOTION ---
-    // Pushing your hand forward away from your body moves you forward
     AFRAME.registerComponent('hand-locomotion', {
         init: function () {
             this.camera = document.querySelector('a-camera');
@@ -173,29 +167,23 @@
         tick: function (time, timeDelta) {
             if (!timeDelta || !gameStarted) return;
 
-            // Get World positions of Hand and Head (Camera)
             this.el.object3D.getWorldPosition(this.handPos);
             this.camera.object3D.getWorldPosition(this.camPos);
 
-            // Calculate horizontal distance between head and hand (ignore height)
             const dx = this.handPos.x - this.camPos.x;
             const dz = this.handPos.z - this.camPos.z;
             const distance = Math.sqrt(dx*dx + dz*dz);
 
-            // Threshold: If hand is pushed more than 35cm away from the center of the head
             const pushThreshold = 0.35; 
 
             if (distance > pushThreshold) {
-                // Get direction camera is looking
                 this.camera.object3D.getWorldDirection(this.moveDir);
-                this.moveDir.y = 0; // Keep movement locked to floor
+                this.moveDir.y = 0; 
                 this.moveDir.normalize();
 
-                // Speed scales based on how far you reach
                 const speedMultiplier = (distance - pushThreshold) * 6.0; 
                 const speed = speedMultiplier * (timeDelta / 1000);
 
-                // Move the rig
                 this.rig.object3D.position.addScaledVector(this.moveDir, speed);
             }
         }
@@ -208,12 +196,10 @@
         smashedColor: {type: 'color', default: '#555'}
       },
       init: function () {
-        // Handle punch hits
         window.addEventListener('hit', (e) => {
            if (e.detail.target === this.el) this.takeDamage();
         });
 
-        // Handle collision damage (thrown items)
         this.el.addEventListener('collidestart', (e) => {
           const target = e.detail.targetEl;
           if (target && (target.classList.contains('weapon') || target.classList.contains('grabbable'))) {
@@ -225,7 +211,6 @@
         if (this.data.health <= 0) return;
         this.data.health--;
         
-        // Shrink slightly to show damage
         const currentScale = this.el.getAttribute('scale') || {x: 1, y: 1, z: 1};
         this.el.setAttribute('scale', {
           x: currentScale.x * 0.9,
@@ -242,21 +227,28 @@
       }
     });
 
-    // --- MODULE 4: BOSS PHYSICS MOVEMENT ---
+    // --- MODULE 4: BOSS PHYSICS MOVEMENT (FIXED TIPPING) ---
     AFRAME.registerComponent('boss-behavior', {
       init: function () {
         this.targetPos = new THREE.Vector3();
         this.isMoving = false;
+        this.physicsConfigured = false;
       },
       setNewTarget: function () {
         if (!gameStarted) return;
-        // Pick a random point in the room
         this.targetPos.set((Math.random() - 0.5) * 8, 0, (Math.random() - 0.5) * 8);
         this.isMoving = true;
       },
       tick: function (time, timeDelta) {
         if (!gameStarted || !this.el.body) return;
         
+        // Lock physics rotation so the boss doesn't fall over
+        if (!this.physicsConfigured) {
+          this.el.body.fixedRotation = true;
+          this.el.body.updateMassProperties();
+          this.physicsConfigured = true;
+        }
+
         if (!this.isMoving) {
           this.setNewTarget();
           return;
@@ -268,23 +260,23 @@
         const distance = Math.sqrt(dx*dx + dz*dz);
         
         if (distance < 0.5) {
-          // Arrived at target, stop and wait
           this.isMoving = false;
           this.el.body.velocity.set(0, this.el.body.velocity.y, 0); 
           setTimeout(() => { this.setNewTarget(); }, 1500 + Math.random() * 2000);
           return;
         }
         
-        // Use Cannon.js body velocity to move (prevents fighting physics engine)
         const speed = 1.2;
         const dirX = (dx / distance) * speed;
         const dirZ = (dz / distance) * speed;
         
+        // Move via physics velocity
         this.el.body.velocity.set(dirX, this.el.body.velocity.y, dirZ);
         
-        // Rotate boss to face direction
+        // Rotate visually and sync to physics body
         const angle = Math.atan2(dirX, dirZ);
-        this.el.object3D.rotation.y = angle;
+        this.el.object3D.rotation.set(0, angle, 0);
+        this.el.body.quaternion.copy(this.el.object3D.quaternion);
       }
     });
 
@@ -310,7 +302,6 @@
     <button id="start-btn" onclick="startGame()">ENTER OFFICE</button>
   </div>
 
-  <!-- Scene with explicit local-floor reference to prevent hands sinking into the ground -->
   <a-scene physics="gravity: -9.8; debug: false" webxr="referenceSpaceType: local-floor; optionalFeatures: hand-tracking;">
     
     <a-assets>
@@ -321,13 +312,13 @@
     <a-entity id="rig" position="0 0 5">
       <a-camera position="0 1.6 0" look-controls wasd-controls></a-camera>
 
-      <!-- Left Hand: Interaction + Extension Locomotion -->
+      <!-- Left Hand -->
       <a-entity hand-tracking-controls="hand: left" 
                 hand-interactions 
                 hand-locomotion>
       </a-entity>
 
-      <!-- Right Hand: Interaction Only -->
+      <!-- Right Hand -->
       <a-entity hand-tracking-controls="hand: right" 
                 hand-interactions>
       </a-entity>
@@ -339,7 +330,6 @@
                material="src: #checker-tex; repeat: 16 16; roughness: 1.0; metalness: 0.0" 
                static-body></a-plane>
       
-      <!-- Walls -->
       <a-box position="0 2 -8" width="16" height="4" depth="0.2" color="#eee" static-body></a-box>
       <a-box position="0 2 8" width="16" height="4" depth="0.2" color="#eee" static-body></a-box>
       <a-box position="-8 2 0" width="0.2" height="4" depth="16" color="#eee" static-body></a-box>
@@ -347,7 +337,37 @@
       <a-box position="0 4 0" width="16" height="0.1" depth="16" color="#fff" static-body></a-box>
     </a-entity>
 
-    <!-- Workstations generation (Includes Chairs) -->
+    <!-- Printers and Filing Cabinets -->
+    <!-- Printer -->
+    <a-entity class="breakable grabbable" position="0 0.5 -7.2" dynamic-body="mass: 30" smashable="health: 6; smashedColor: #333">
+      <!-- Base -->
+      <a-box width="1.5" height="1" depth="1" color="#f4f4f4"></a-box>
+      <!-- Glass top Scanner -->
+      <a-box position="0 0.55 0" width="1.4" height="0.1" depth="0.9" color="#2b2b2b"></a-box>
+      <a-box position="0 0.56 0" width="1.2" height="0.1" depth="0.7" color="#add8e6"></a-box>
+      <!-- Control Panel -->
+      <a-box position="-0.5 0.6 0.4" width="0.3" height="0.05" depth="0.2" color="#111" rotation="15 0 0"></a-box>
+      <!-- Paper Tray out -->
+      <a-box position="0.8 0.1 0" width="0.4" height="0.1" depth="0.6" color="#ddd"></a-box>
+    </a-entity>
+
+    <!-- Filing Cabinet 1 -->
+    <a-entity class="breakable grabbable" position="-7 1 -6" dynamic-body="mass: 25" smashable="health: 4; smashedColor: #4a5568">
+      <a-box width="0.8" height="2" depth="0.8" color="#718096"></a-box>
+      <a-box position="0 0.5 0.41" width="0.7" height="0.4" depth="0.05" color="#a0aec0"></a-box>
+      <a-box position="0 0 0.41" width="0.7" height="0.4" depth="0.05" color="#a0aec0"></a-box>
+      <a-box position="0 -0.5 0.41" width="0.7" height="0.4" depth="0.05" color="#a0aec0"></a-box>
+    </a-entity>
+
+    <!-- Filing Cabinet 2 -->
+    <a-entity class="breakable grabbable" position="7 1 -6" dynamic-body="mass: 25" smashable="health: 4; smashedColor: #4a5568">
+      <a-box width="0.8" height="2" depth="0.8" color="#718096"></a-box>
+      <a-box position="0 0.5 0.41" width="0.7" height="0.4" depth="0.05" color="#a0aec0"></a-box>
+      <a-box position="0 0 0.41" width="0.7" height="0.4" depth="0.05" color="#a0aec0"></a-box>
+      <a-box position="0 -0.5 0.41" width="0.7" height="0.4" depth="0.05" color="#a0aec0"></a-box>
+    </a-entity>
+
+    <!-- Workstations generation -->
     <a-entity id="work-area">
       <script>
         window.addEventListener('DOMContentLoaded', () => {
@@ -384,27 +404,24 @@
               group.appendChild(laptop);
             });
 
-            // Restored Chairs
+            // Chairs
             const chair = document.createElement('a-entity');
             chair.setAttribute('class', 'breakable grabbable');
-            chair.setAttribute('position', `0 0.5 0.8`); // Placed behind the desk
+            chair.setAttribute('position', `0 0.5 0.8`); 
             chair.setAttribute('dynamic-body', 'mass: 3');
             chair.setAttribute('smashable', 'health: 3; smashedColor: #111');
 
-            // Chair Seat
             const seat = document.createElement('a-box');
             seat.setAttribute('width', '0.6'); seat.setAttribute('height', '0.1'); seat.setAttribute('depth', '0.6');
             seat.setAttribute('color', '#333');
             chair.appendChild(seat);
 
-            // Chair Backrest
             const back = document.createElement('a-box');
             back.setAttribute('position', '0 0.5 0.25');
             back.setAttribute('width', '0.6'); back.setAttribute('height', '0.9'); back.setAttribute('depth', '0.1');
             back.setAttribute('color', '#333');
             chair.appendChild(back);
 
-            // Chair Leg
             const leg = document.createElement('a-cylinder');
             leg.setAttribute('position', '0 -0.25 0');
             leg.setAttribute('radius', '0.05'); leg.setAttribute('height', '0.5');
@@ -418,7 +435,7 @@
       </script>
     </a-entity>
 
-    <!-- Boss (Now uses physical velocity for movement) -->
+    <!-- Boss (Fixed Physics) -->
     <a-entity id="boss" class="breakable" position="0 1 -4" boss-behavior dynamic-body="mass: 80" smashable="health: 12; smashedColor: #ff0000">
       <a-box position="0 0.6 0" width="0.6" height="1.0" depth="0.4" color="#00008B"></a-box>
       <a-box position="0 1.3 0" width="0.35" height="0.35" depth="0.35" color="#ffe0bd"></a-box>
@@ -446,4 +463,4 @@
 
   </a-scene>
 </body>
-</html>\
+</html>
