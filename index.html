@@ -21,8 +21,18 @@
       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
       text-align: center;
     }
-    #overlay h1 { font-size: 3rem; margin-bottom: 0.5rem; color: #ff4444; text-transform: uppercase; letter-spacing: 5px; }
-    #overlay p { font-size: 1.2rem; max-width: 600px; margin-bottom: 2rem; color: #ccc; }
+    #overlay h1 { font-size: 3.5rem; margin-bottom: 0.5rem; color: #ff4444; text-transform: uppercase; letter-spacing: 5px; }
+    #overlay p { font-size: 1.2rem; max-width: 600px; margin-bottom: 1rem; color: #ccc; }
+    .instructions {
+      background: rgba(255,255,255,0.1);
+      padding: 20px;
+      border-radius: 10px;
+      margin-bottom: 2rem;
+      text-align: left;
+      border: 1px solid #555;
+    }
+    .instructions li { margin-bottom: 10px; font-size: 1.1rem; }
+    .instructions strong { color: #7BC8A4; }
     #start-btn {
       padding: 15px 40px;
       font-size: 1.5rem;
@@ -31,6 +41,7 @@
       border: none;
       border-radius: 5px;
       cursor: pointer;
+      font-weight: bold;
       transition: transform 0.2s, background 0.2s;
     }
     #start-btn:hover { background: #cc0000; transform: scale(1.1); }
@@ -39,7 +50,7 @@
   <script>
     let gameStarted = false;
 
-    // --- MODULE 1: HAND INTERACTIONS (Integrated from template) ---
+    // --- MODULE 1: HAND INTERACTIONS (Pinch to Grab & Punch to Break) ---
     AFRAME.registerComponent('hand-interactions', {
         init: function () {
             this.grabbedEl = null;
@@ -80,6 +91,7 @@
         tick: function (time, timeDelta) {
             this.el.object3D.getWorldPosition(this.handPos);
 
+            // Velocity tracking for throwing
             if (timeDelta > 0) {
                 this.positions.push({ pos: this.handPos.clone(), time: time });
                 if (this.positions.length > 5) this.positions.shift();
@@ -91,6 +103,7 @@
                 }
             }
 
+            // Fist Detection for Punching
             const mesh = this.el.getObject3D('mesh');
             if (mesh && mesh.skeleton) {
                 const wrist = new THREE.Vector3().setFromMatrixPosition(mesh.skeleton.bones[0].matrixWorld);
@@ -102,6 +115,7 @@
                 this.isFist = (maxDist > 0 && maxDist < 0.085);
             }
 
+            // Hold Object
             if (this.grabbedEl) {
                 const offset = new THREE.Vector3(0, -0.05, -0.05).applyQuaternion(this.el.object3D.quaternion);
                 const targetPos = this.handPos.clone().add(offset);
@@ -115,12 +129,13 @@
                 return;
             }
 
+            // Hover Logic
             let closest = null;
             let minDist = Infinity;
             document.querySelectorAll('.grabbable').forEach(el => {
                 el.object3D.getWorldPosition(this.worldPos);
                 const d = this.handPos.distanceTo(this.worldPos);
-                if (d < 0.2 && d < minDist) { closest = el; minDist = d; }
+                if (d < 0.25 && d < minDist) { closest = el; minDist = d; }
             });
 
             if (this.hoverEl && this.hoverEl !== closest) {
@@ -130,13 +145,14 @@
             if (closest && !this.hoverEl) {
                 this.hoverEl = closest;
                 if (!this.hoverEl.dataset.originalColor) this.hoverEl.dataset.originalColor = this.hoverEl.getAttribute('color');
-                this.hoverEl.setAttribute('color', '#aaffaa');
+                this.hoverEl.setAttribute('color', '#aaffaa'); // Highlight green
             }
 
+            // Punch Logic
             if (this.isFist) {
                 document.querySelectorAll('.breakable, .grabbable').forEach(el => {
                     el.object3D.getWorldPosition(this.worldPos);
-                    if (this.handPos.distanceTo(this.worldPos) < 0.15) {
+                    if (this.handPos.distanceTo(this.worldPos) < 0.25) {
                         this.el.emit('hit', {target: el});
                     }
                 });
@@ -144,64 +160,60 @@
         }
     });
 
-    // --- MODULE 2: LOCOMOTION ---
-    AFRAME.registerComponent('smooth-locomotion', {
-        schema: {
-            speed: {type: 'number', default: 2.0},
-            turnAngle: {type: 'number', default: 45}
-        },
+    // --- MODULE 2: HAND-EXTENSION LOCOMOTION ---
+    // Pushing your hand forward away from your body moves you forward
+    AFRAME.registerComponent('hand-locomotion', {
         init: function () {
-            this.moveData = {x: 0, y: 0};
-            this.canSnap = true;
-            this.el.addEventListener('thumbstickmoved', (evt) => {
-                this.moveData = evt.detail;
-            });
+            this.camera = document.querySelector('a-camera');
+            this.rig = document.getElementById('rig');
+            this.handPos = new THREE.Vector3();
+            this.camPos = new THREE.Vector3();
+            this.moveDir = new THREE.Vector3();
         },
         tick: function (time, timeDelta) {
-            if (!timeDelta) return;
-            const rig = document.getElementById('rig');
-            const cam = document.querySelector('a-camera');
-            const handType = this.el.getAttribute('hand-tracking-controls').hand;
-            
-            if (handType === 'left') {
-                if (Math.abs(this.moveData.x) > 0.1 || Math.abs(this.moveData.y) > 0.1) {
-                    const direction = new THREE.Vector3(this.moveData.x, 0, this.moveData.y);
-                    const rotation = cam.object3D.quaternion;
-                    direction.applyQuaternion(rotation);
-                    direction.y = 0;
-                    direction.normalize();
-                    const speed = this.data.speed * (timeDelta / 1000);
-                    rig.object3D.position.addScaledVector(direction, speed);
-                }
-            }
+            if (!timeDelta || !gameStarted) return;
 
-            if (handType === 'right') {
-                if (Math.abs(this.moveData.x) > 0.7) {
-                    if (this.canSnap) {
-                        const angle = this.moveData.x > 0 ? -this.data.turnAngle : this.data.turnAngle;
-                        rig.object3D.rotation.y += THREE.MathUtils.degToRad(angle);
-                        this.canSnap = false;
-                    }
-                } else {
-                    this.canSnap = true;
-                }
+            // Get World positions of Hand and Head (Camera)
+            this.el.object3D.getWorldPosition(this.handPos);
+            this.camera.object3D.getWorldPosition(this.camPos);
+
+            // Calculate horizontal distance between head and hand (ignore height)
+            const dx = this.handPos.x - this.camPos.x;
+            const dz = this.handPos.z - this.camPos.z;
+            const distance = Math.sqrt(dx*dx + dz*dz);
+
+            // Threshold: If hand is pushed more than 35cm away from the center of the head
+            const pushThreshold = 0.35; 
+
+            if (distance > pushThreshold) {
+                // Get direction camera is looking
+                this.camera.object3D.getWorldDirection(this.moveDir);
+                this.moveDir.y = 0; // Keep movement locked to floor
+                this.moveDir.normalize();
+
+                // Speed scales based on how far you reach
+                const speedMultiplier = (distance - pushThreshold) * 6.0; 
+                const speed = speedMultiplier * (timeDelta / 1000);
+
+                // Move the rig
+                this.rig.object3D.position.addScaledVector(this.moveDir, speed);
             }
         }
     });
 
-    // Smash Logic Extension
+    // --- MODULE 3: BREAKABLE LOGIC ---
     AFRAME.registerComponent('smashable', {
       schema: {
         health: {type: 'number', default: 3},
         smashedColor: {type: 'color', default: '#555'}
       },
       init: function () {
-        // Handle punch hits from template
+        // Handle punch hits
         window.addEventListener('hit', (e) => {
            if (e.detail.target === this.el) this.takeDamage();
         });
 
-        // Handle collision damage
+        // Handle collision damage (thrown items)
         this.el.addEventListener('collidestart', (e) => {
           const target = e.detail.targetEl;
           if (target && (target.classList.contains('weapon') || target.classList.contains('grabbable'))) {
@@ -210,13 +222,17 @@
         });
       },
       takeDamage: function() {
+        if (this.data.health <= 0) return;
         this.data.health--;
+        
+        // Shrink slightly to show damage
         const currentScale = this.el.getAttribute('scale') || {x: 1, y: 1, z: 1};
         this.el.setAttribute('scale', {
           x: currentScale.x * 0.9,
           y: currentScale.y * 0.9,
           z: currentScale.z * 0.9
         });
+
         if (this.data.health <= 0) {
           this.el.setAttribute('color', this.data.smashedColor);
           if (this.el.body) {
@@ -226,47 +242,48 @@
       }
     });
 
-    AFRAME.registerComponent('clock-logic', {
-      init: function () {
-        this.hourHand = this.el.querySelector('.hour-hand');
-        this.minHand = this.el.querySelector('.min-hand');
-      },
-      tick: function () {
-        const now = new Date();
-        const h = now.getHours() % 12, m = now.getMinutes(), s = now.getSeconds();
-        this.hourHand.setAttribute('rotation', `0 0 ${-(h * 30 + m * 0.5)}`);
-        this.minHand.setAttribute('rotation', `0 0 ${-(m * 6 + s * 0.1)}`);
-      }
-    });
-
+    // --- MODULE 4: BOSS PHYSICS MOVEMENT ---
     AFRAME.registerComponent('boss-behavior', {
       init: function () {
         this.targetPos = new THREE.Vector3();
-        this.velocity = new THREE.Vector3();
         this.isMoving = false;
       },
       setNewTarget: function () {
         if (!gameStarted) return;
-        this.targetPos.set((Math.random() - 0.5) * 6, 0.5, (Math.random() - 0.5) * 6);
+        // Pick a random point in the room
+        this.targetPos.set((Math.random() - 0.5) * 8, 0, (Math.random() - 0.5) * 8);
         this.isMoving = true;
       },
       tick: function (time, timeDelta) {
-        if (!gameStarted) return;
+        if (!gameStarted || !this.el.body) return;
+        
         if (!this.isMoving) {
           this.setNewTarget();
           return;
         }
+        
         const currentPos = this.el.object3D.position;
-        const distance = currentPos.distanceTo(this.targetPos);
-        if (distance < 0.2) {
+        const dx = this.targetPos.x - currentPos.x;
+        const dz = this.targetPos.z - currentPos.z;
+        const distance = Math.sqrt(dx*dx + dz*dz);
+        
+        if (distance < 0.5) {
+          // Arrived at target, stop and wait
           this.isMoving = false;
-          setTimeout(() => { this.setNewTarget(); }, 2000 + Math.random() * 2000);
+          this.el.body.velocity.set(0, this.el.body.velocity.y, 0); 
+          setTimeout(() => { this.setNewTarget(); }, 1500 + Math.random() * 2000);
           return;
         }
-        this.velocity.subVectors(this.targetPos, currentPos).normalize();
-        const speed = 0.0015 * timeDelta;
-        this.el.object3D.position.addScaledVector(this.velocity, speed);
-        const angle = Math.atan2(this.velocity.x, this.velocity.z);
+        
+        // Use Cannon.js body velocity to move (prevents fighting physics engine)
+        const speed = 1.2;
+        const dirX = (dx / distance) * speed;
+        const dirZ = (dz / distance) * speed;
+        
+        this.el.body.velocity.set(dirX, this.el.body.velocity.y, dirZ);
+        
+        // Rotate boss to face direction
+        const angle = Math.atan2(dirX, dirZ);
         this.el.object3D.rotation.y = angle;
       }
     });
@@ -279,101 +296,143 @@
 </head>
 <body>
 
+  <!-- Instructions Overlay -->
   <div id="overlay">
     <h1>Corporate Catharsis</h1>
-    <p>Deadline Missed. Use your hands to pinch-grab items, throw them, or punch the furniture.</p>
+    <p>Deadline Missed. Time to break everything.</p>
+    
+    <ul class="instructions">
+      <li><strong>Walk:</strong> Push your LEFT hand forward, away from your body.</li>
+      <li><strong>Grab & Throw:</strong> Pinch your index and thumb together on objects.</li>
+      <li><strong>Punch:</strong> Make a fist and hit objects to damage them.</li>
+    </ul>
+
     <button id="start-btn" onclick="startGame()">ENTER OFFICE</button>
   </div>
 
-  <a-scene physics="gravity: -9.8; debug: false" webxr="optionalFeatures: hand-tracking;">
+  <!-- Scene with explicit local-floor reference to prevent hands sinking into the ground -->
+  <a-scene physics="gravity: -9.8; debug: false" webxr="referenceSpaceType: local-floor; optionalFeatures: hand-tracking;">
     
     <a-assets>
       <img id="checker-tex" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='256' height='256'%3E%3Crect width='128' height='128' fill='%23e0e0e0'/%3E%3Crect x='128' y='128' width='128' height='128' fill='%23e0e0e0'/%3E%3Crect x='128' width='128' height='128' fill='%23333333'/%3E%3Crect y='128' width='128' height='128' fill='%23333333'/%3E%3C/svg%3E" crossorigin="anonymous">
     </a-assets>
 
-    <!-- THE RIG: For locomotion -->
+    <!-- THE RIG -->
     <a-entity id="rig" position="0 0 5">
-      <a-camera position="0 1.6 0" look-controls wasd-controls>
-        <a-cursor fuse="false" raycaster="objects: .grabbable, .weapon" color="red"></a-cursor>
-      </a-camera>
+      <a-camera position="0 1.6 0" look-controls wasd-controls></a-camera>
 
-      <!-- Hand Controllers with integrated interactions -->
+      <!-- Left Hand: Interaction + Extension Locomotion -->
       <a-entity hand-tracking-controls="hand: left" 
                 hand-interactions 
-                smooth-locomotion="speed: 3">
+                hand-locomotion>
       </a-entity>
 
+      <!-- Right Hand: Interaction Only -->
       <a-entity hand-tracking-controls="hand: right" 
-                hand-interactions 
-                smooth-locomotion>
+                hand-interactions>
       </a-entity>
     </a-entity>
 
     <!-- Environment -->
     <a-entity id="room">
-      <a-plane class="navmesh" rotation="-90 0 0" width="12" height="12" 
-               material="src: #checker-tex; repeat: 12 12; roughness: 1.0; metalness: 0.0" 
+      <a-plane class="navmesh" rotation="-90 0 0" width="16" height="16" 
+               material="src: #checker-tex; repeat: 16 16; roughness: 1.0; metalness: 0.0" 
                static-body></a-plane>
       
-      <a-box position="0 2 -6" width="12" height="4" depth="0.2" color="#eee" static-body></a-box>
-      <a-box position="0 2 6" width="12" height="4" depth="0.2" color="#eee" static-body></a-box>
-      <a-box position="-6 2 0" width="0.2" height="4" depth="12" color="#eee" static-body></a-box>
-      <a-box position="6 2 0" width="0.2" height="4" depth="12" color="#eee" static-body></a-box>
-      <a-box position="0 4 0" width="12" height="0.1" depth="12" color="#fff" static-body></a-box>
+      <!-- Walls -->
+      <a-box position="0 2 -8" width="16" height="4" depth="0.2" color="#eee" static-body></a-box>
+      <a-box position="0 2 8" width="16" height="4" depth="0.2" color="#eee" static-body></a-box>
+      <a-box position="-8 2 0" width="0.2" height="4" depth="16" color="#eee" static-body></a-box>
+      <a-box position="8 2 0" width="0.2" height="4" depth="16" color="#eee" static-body></a-box>
+      <a-box position="0 4 0" width="16" height="0.1" depth="16" color="#fff" static-body></a-box>
     </a-entity>
 
-    <!-- Workstations -->
+    <!-- Workstations generation (Includes Chairs) -->
     <a-entity id="work-area">
       <script>
         window.addEventListener('DOMContentLoaded', () => {
           const area = document.querySelector('#work-area');
-          const positions = [{x: -2, z: -1.5}, {x: 2, z: -1.5}, {x: -2, z: 0.5}, {x: 2, z: 0.5}, {x: -2, z: 2.5}, {x: 2, z: 2.5}];
+          const positions = [
+            {x: -3, z: -2}, {x: 3, z: -2}, 
+            {x: -3, z: 1}, {x: 3, z: 1}, 
+            {x: -3, z: 4}, {x: 3, z: 4}
+          ];
           
           positions.forEach(pos => {
             const group = document.createElement('a-entity');
             group.setAttribute('position', `${pos.x} 0 ${pos.z}`);
             
+            // Desk
             const desk = document.createElement('a-box');
             desk.setAttribute('class', 'breakable grabbable');
             desk.setAttribute('position', '0 0.75 0');
-            desk.setAttribute('width', '1.5'); desk.setAttribute('height', '0.05'); desk.setAttribute('depth', '0.8');
+            desk.setAttribute('width', '2.0'); desk.setAttribute('height', '0.05'); desk.setAttribute('depth', '1.0');
             desk.setAttribute('color', '#d2b48c');
             desk.setAttribute('static-body', '');
             desk.setAttribute('smashable', 'health: 5; smashedColor: #8b4513');
             group.appendChild(desk);
 
-            [-0.4, 0.4].forEach(offset => {
+            // Laptops
+            [-0.5, 0.5].forEach(offset => {
               const laptop = document.createElement('a-box');
               laptop.setAttribute('class', 'breakable grabbable');
               laptop.setAttribute('position', `${offset} 0.8 0`);
-              laptop.setAttribute('width', '0.35'); laptop.setAttribute('height', '0.05'); laptop.setAttribute('depth', '0.25');
+              laptop.setAttribute('width', '0.4'); laptop.setAttribute('height', '0.05'); laptop.setAttribute('depth', '0.3');
               laptop.setAttribute('color', '#2b2b2b');
-              laptop.setAttribute('dynamic-body', 'mass: 0.5');
+              laptop.setAttribute('dynamic-body', 'mass: 1.0');
               laptop.setAttribute('smashable', 'health: 2; smashedColor: #000');
               group.appendChild(laptop);
             });
 
+            // Restored Chairs
+            const chair = document.createElement('a-entity');
+            chair.setAttribute('class', 'breakable grabbable');
+            chair.setAttribute('position', `0 0.5 0.8`); // Placed behind the desk
+            chair.setAttribute('dynamic-body', 'mass: 3');
+            chair.setAttribute('smashable', 'health: 3; smashedColor: #111');
+
+            // Chair Seat
+            const seat = document.createElement('a-box');
+            seat.setAttribute('width', '0.6'); seat.setAttribute('height', '0.1'); seat.setAttribute('depth', '0.6');
+            seat.setAttribute('color', '#333');
+            chair.appendChild(seat);
+
+            // Chair Backrest
+            const back = document.createElement('a-box');
+            back.setAttribute('position', '0 0.5 0.25');
+            back.setAttribute('width', '0.6'); back.setAttribute('height', '0.9'); back.setAttribute('depth', '0.1');
+            back.setAttribute('color', '#333');
+            chair.appendChild(back);
+
+            // Chair Leg
+            const leg = document.createElement('a-cylinder');
+            leg.setAttribute('position', '0 -0.25 0');
+            leg.setAttribute('radius', '0.05'); leg.setAttribute('height', '0.5');
+            leg.setAttribute('color', '#222');
+            chair.appendChild(leg);
+
+            group.appendChild(chair);
             area.appendChild(group);
           });
         });
       </script>
     </a-entity>
 
-    <!-- Boss -->
-    <a-entity id="boss" class="breakable" position="0 0 -4" boss-behavior dynamic-body="mass: 80" smashable="health: 12; smashedColor: #ff0000">
-      <a-box position="0 1 0" width="0.5" height="0.8" depth="0.3" color="#00008B"></a-box>
-      <a-box position="0 1.6 0" width="0.3" height="0.3" depth="0.3" color="#ffe0bd"></a-box>
-      <a-cylinder position="-0.15 0.4 0" radius="0.08" height="0.8" color="#000"></a-cylinder>
-      <a-cylinder position="0.15 0.4 0" radius="0.08" height="0.8" color="#000"></a-cylinder>
+    <!-- Boss (Now uses physical velocity for movement) -->
+    <a-entity id="boss" class="breakable" position="0 1 -4" boss-behavior dynamic-body="mass: 80" smashable="health: 12; smashedColor: #ff0000">
+      <a-box position="0 0.6 0" width="0.6" height="1.0" depth="0.4" color="#00008B"></a-box>
+      <a-box position="0 1.3 0" width="0.35" height="0.35" depth="0.35" color="#ffe0bd"></a-box>
+      <a-cylinder position="-0.15 0.0 0" radius="0.1" height="0.8" color="#000"></a-cylinder>
+      <a-cylinder position="0.15 0.0 0" radius="0.1" height="0.8" color="#000"></a-cylinder>
     </a-entity>
 
     <!-- Weapons (Grabbable) -->
-    <a-entity id="bat" class="weapon grabbable" position="5.5 0.5 -2" 
+    <a-entity id="bat" class="weapon grabbable" position="5.5 1.0 -2" 
               dynamic-body="mass: 2">
       <a-cylinder radius="0.03" height="0.8" color="#8B4513" rotation="0 0 10"></a-cylinder>
     </a-entity>
 
-    <a-entity id="hammer" class="weapon grabbable" position="5.3 0.2 -2.5" 
+    <a-entity id="hammer" class="weapon grabbable" position="5.3 1.0 -2.5" 
               dynamic-body="mass: 4">
       <a-entity rotation="90 0 0">
         <a-cylinder radius="0.02" height="0.4" color="#444"></a-cylinder>
@@ -381,18 +440,10 @@
       </a-entity>
     </a-entity>
 
-    <!-- Clock -->
-    <a-entity id="clock" position="0 2.5 -5.88" clock-logic>
-      <a-cylinder rotation="90 0 0" radius="0.4" height="0.1" color="#fff"></a-cylinder>
-      <a-box class="hour-hand" position="0 0 0.06" width="0.02" height="0.2" depth="0.01" color="#000" pivot="0 -0.1 0"></a-box>
-      <a-box class="min-hand" position="0 0 0.07" width="0.015" height="0.3" depth="0.01" color="#000" pivot="0 -0.15 0"></a-box>
-    </a-entity>
-
     <!-- Lights -->
-    <a-light type="ambient" color="#fff" intensity="0.4"></a-light>
-    <a-light type="directional" position="-1 10 1" intensity="0.8" castShadow="true"></a-light>
-    <a-light type="point" position="0 3.5 0" intensity="0.4" color="#ccf"></a-light>
+    <a-light type="ambient" color="#fff" intensity="0.5"></a-light>
+    <a-light type="directional" position="-1 10 1" intensity="0.6" castShadow="true"></a-light>
 
   </a-scene>
 </body>
-</html>
+</html>\
