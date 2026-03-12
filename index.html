@@ -167,8 +167,16 @@
         tick: function (time, timeDelta) {
             if (!timeDelta || !gameStarted) return;
 
+            // Only proceed if the hand mesh is actively tracked and visible
+            const mesh = this.el.getObject3D('mesh');
+            if (!mesh || !mesh.visible) return;
+
             this.el.object3D.getWorldPosition(this.handPos);
             this.camera.object3D.getWorldPosition(this.camPos);
+
+            // Require the hand to be lifted up at least somewhat (waist level or higher)
+            // This prevents your arms resting at your sides from moving you automatically.
+            if (this.handPos.y < this.camPos.y - 0.6) return;
 
             // Get camera look direction (horizontal)
             this.camera.object3D.getWorldDirection(this.moveDir);
@@ -186,15 +194,15 @@
             let speed = 0;
             // Neutral deadzone between 0.2m (close to body) and 0.4m (slightly extended)
             if (forwardPush > 0.4) {
-                // Hand extended forward
-                speed = (forwardPush - 0.4) * 1.2; 
-            } else if (forwardPush < 0.2) {
-                // Hand pulled close to chest/face
-                speed = (forwardPush - 0.2) * 1.2; 
+                // Hand extended forward -> move ahead slowly
+                speed = (forwardPush - 0.4) * 0.8; 
+            } else if (forwardPush > -0.2 && forwardPush < 0.2) {
+                // Hand pulled close to chest/face -> move backwards slowly
+                speed = (forwardPush - 0.2) * 0.8; 
             }
 
-            // Cap the speed to keep it slow, smooth, and natural
-            speed = Math.max(-0.8, Math.min(0.8, speed));
+            // Cap the speed to keep it VERY slow, smooth, and natural (Max 0.4 m/s)
+            speed = Math.max(-0.4, Math.min(0.4, speed));
 
             if (Math.abs(speed) > 0.01) {
                 this.rig.object3D.position.addScaledVector(this.moveDir, speed * (timeDelta / 1000));
@@ -454,8 +462,8 @@
       </script>
     </a-entity>
 
-    <!-- Boss (Fixed Physics) -->
-    <a-entity id="boss" class="breakable" position="0 1 -4" boss-behavior dynamic-body="type: kinematic; mass: 80" smashable="health: 12; smashedColor: #ff0000">
+    <!-- Boss (Fixed Physics and Float) -->
+    <a-entity id="boss" class="breakable" position="0 0.4 -4" boss-behavior dynamic-body="type: kinematic; mass: 80" smashable="health: 12; smashedColor: #ff0000">
       <a-box position="0 0.6 0" width="0.6" height="1.0" depth="0.4" color="#00008B"></a-box>
       <a-box position="0 1.3 0" width="0.35" height="0.35" depth="0.35" color="#ffe0bd"></a-box>
       <a-cylinder position="-0.15 0.0 0" radius="0.1" height="0.8" color="#000"></a-cylinder>
